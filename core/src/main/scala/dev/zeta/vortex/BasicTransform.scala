@@ -1,3 +1,5 @@
+package dev.zeta.vortex
+
 
 /**
  * Basic Wave for transformations like Fast Fourier Transform (FFT), Fast
