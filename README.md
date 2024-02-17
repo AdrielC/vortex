@@ -20,9 +20,35 @@ Vortex is a scalable Scala library tailored for high-performance and fault-toler
 	•	/tests: Unit and integration tests to ensure reliability and precision.
 	•	/examples: Sample applications and scripts demonstrating Vortex in various scenarios.
 
+
+## Key Functionalities
+
+### State Space Modeling:
+- Implement state-of-the-art state space models.
+- Provide tools for model fitting, diagnostics, and predictions.
+### Time Series Processing:
+- Support for various windowing operations for streaming data.
+- Facilitate the handling of both regular and irregular time series.
+### Signal Processing:
+- Implement Fast Fourier Transforms (FFT) and Wavelet Transforms for frequency domain analysis.
+- Provide utilities for noise reduction, trend extraction, and signal decomposition.
+### Real-Time Data Analysis:
+- Enable real-time processing and analysis of streaming data.
+- Ensure low latency and high throughput for live data feeds.
+- Functional Programming in ZIO Streams:
+- Leverage the power of functional programming for building robust and type-safe data pipelines.
+- Integrate seamlessly with the ZIO ecosystem for asynchronous and concurrent tasks.
+
+## Project Goals
+
+Achieve parity with key functionalities of the StatsModels Python project.
+Provide a Scala-native, type-safe, and functional approach to time series analysis.
+Make state space modeling and signal processing accessible and efficient in a streaming context.
+
+
 ## Getting Started
 
-(Include basic installation instructions, guide on importing Vortex into Scala projects, and a simple usage example.)
+
 
 ## Contributing
 
