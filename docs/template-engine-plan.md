@@ -2,6 +2,16 @@
 
 This document captures the agreed project structure, phase plan, and guardrails for the template engine workstream.
 
+## Project Structure Overview
+
+- Rust workspace (Cargo) under `template-engine/` with three crates:
+  - `crates/template_engine/` (core, pure Rust; JSON-in/out facade + typed API).
+  - `crates/template_engine_py/` (Python bindings via `pyo3` + `maturin`).
+  - `crates/template_engine_wasm/` (WASM bindings via `wasm-bindgen` + TS wrapper).
+- Specs and schemas live at the top level under `spec/` and `schemas/` to keep wire-format evolution explicit.
+- Fixtures live under `fixtures/` and are validated in CI against the schemas.
+- Tooling helpers live under `tools/` (schema check, optional schema generator).
+
 ## Project Tree (Annotated)
 
 ```
