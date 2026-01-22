@@ -45,11 +45,15 @@ fn replace_text(template: &mut Template, target: TextTarget, value: String) -> R
         ));
     };
 
-    if target.start > target.end || target.end > text.len() {
+    let char_count = text.chars().count();
+    if target.start > target.end || target.end > char_count {
         return Err(EngineError::InvalidArgument("invalid text range".into()));
     }
 
-    text.replace_range(target.start..target.end, &value);
+    let start = char_to_byte_index(text, target.start)?;
+    let end = char_to_byte_index(text, target.end)?;
+
+    text.replace_range(start..end, &value);
     Ok(())
 }
 
@@ -65,11 +69,14 @@ fn insert_var(template: &mut Template, target: TextTarget, var: VarSpec) -> Resu
         ));
     };
 
-    if target.start > text.len() {
+    let char_count = text.chars().count();
+    if target.start > char_count {
         return Err(EngineError::InvalidArgument("insert offset out of bounds".into()));
     }
 
-    let right = text.split_off(target.start);
+    let start = char_to_byte_index(text, target.start)?;
+
+    let right = text.split_off(start);
     let left = std::mem::take(text);
 
     template.segments[target.segment_index] = Segment::Text { value: left };
@@ -144,4 +151,15 @@ fn update_var(
     }
 
     Ok(())
+}
+
+fn char_to_byte_index(text: &str, char_index: usize) -> Result<usize, EngineError> {
+    if char_index == text.chars().count() {
+        return Ok(text.len());
+    }
+
+    text.char_indices()
+        .nth(char_index)
+        .map(|(idx, _)| idx)
+        .ok_or_else(|| EngineError::InvalidArgument("char index out of bounds".into()))
 }

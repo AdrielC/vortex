@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{Segment, Template};
+use crate::patch::Rfc6902Op;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct TemplateDiff {
@@ -43,7 +44,11 @@ pub struct StringHunk {
     pub text: String,
 }
 
-pub fn diff_templates(left: &Template, right: &Template) -> TemplateDiff {
+pub fn diff_templates_from_patch(
+    left: &Template,
+    right: &Template,
+    _ops: &[Rfc6902Op],
+) -> TemplateDiff {
     let mut diff = TemplateDiff {
         wire_version: "1.0".into(),
         ..Default::default()

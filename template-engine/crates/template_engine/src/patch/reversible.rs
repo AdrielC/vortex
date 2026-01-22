@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::EngineError;
+use crate::patch::rfc6902::{apply_ops, op_from_json_patch};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PatchBundle {
@@ -18,9 +19,6 @@ pub enum Patch {
     #[serde(rename = "rfc6902")]
     Rfc6902 { ops: Vec<Rfc6902Op> },
 
-    #[serde(rename = "fionn")]
-    Fionn { patch: Value },
-
     #[serde(rename = "merge7396")]
     Merge7396 { patch: Value },
 }
@@ -33,6 +31,12 @@ pub struct Rfc6902Op {
     pub from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ApplyOptions {
+    pub enforce_left_hash: bool,
+    pub enforce_right_hash: bool,
 }
 
 pub fn hash_json(value: &Value) -> String {
@@ -66,44 +70,35 @@ pub fn make_patch_bundle_rfc6902(left: &Value, right: &Value) -> Result<PatchBun
     })
 }
 
-fn op_from_json_patch(op: json_patch::PatchOperation) -> Rfc6902Op {
-    use json_patch::PatchOperation::*;
-    match op {
-        Add(operation) => Rfc6902Op {
-            op: "add".into(),
-            path: operation.path.to_string(),
-            from: None,
-            value: Some(operation.value),
-        },
-        Remove(operation) => Rfc6902Op {
-            op: "remove".into(),
-            path: operation.path.to_string(),
-            from: None,
-            value: None,
-        },
-        Replace(operation) => Rfc6902Op {
-            op: "replace".into(),
-            path: operation.path.to_string(),
-            from: None,
-            value: Some(operation.value),
-        },
-        Move(operation) => Rfc6902Op {
-            op: "move".into(),
-            path: operation.path.to_string(),
-            from: Some(operation.from.to_string()),
-            value: None,
-        },
-        Copy(operation) => Rfc6902Op {
-            op: "copy".into(),
-            path: operation.path.to_string(),
-            from: Some(operation.from.to_string()),
-            value: None,
-        },
-        Test(operation) => Rfc6902Op {
-            op: "test".into(),
-            path: operation.path.to_string(),
-            from: None,
-            value: Some(operation.value),
-        },
+pub fn apply_patch_bundle_forward(
+    doc: &Value,
+    bundle: &PatchBundle,
+    opts: ApplyOptions,
+) -> Result<Value, EngineError> {
+    if opts.enforce_left_hash && hash_json(doc) != bundle.left_hash {
+        return Err(EngineError::InvalidArgument("left_hash mismatch".into()));
+    }
+    apply_patch(doc, &bundle.forward)
+}
+
+pub fn apply_patch_bundle_inverse(
+    doc: &Value,
+    bundle: &PatchBundle,
+    opts: ApplyOptions,
+) -> Result<Value, EngineError> {
+    if opts.enforce_right_hash && hash_json(doc) != bundle.right_hash {
+        return Err(EngineError::InvalidArgument("right_hash mismatch".into()));
+    }
+    apply_patch(doc, &bundle.inverse)
+}
+
+pub fn apply_patch(doc: &Value, patch: &Patch) -> Result<Value, EngineError> {
+    match patch {
+        Patch::Rfc6902 { ops } => apply_ops(doc, ops),
+        Patch::Merge7396 { patch } => {
+            let mut value = doc.clone();
+            json_patch::merge(&mut value, patch);
+            Ok(value)
+        }
     }
 }
