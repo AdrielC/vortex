@@ -1,7 +1,9 @@
 mod compile;
 mod plan;
 
+#[allow(unused_imports)]
 pub use compile::apply_edits;
+#[allow(unused_imports)]
 pub use plan::{Edit, EditPlan, Suggestion, SuggestionStatus, TextTarget, VarPatch, VarSpec};
 
 use crate::ast::Template;

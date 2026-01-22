@@ -2,11 +2,16 @@ mod ast;
 mod edit;
 mod error;
 mod patch;
+mod compiled;
 mod semantic_diff;
 mod text_apply;
 mod ui_diff;
 
 pub use ast::{Segment, Source, Span, Template, VarKind};
+pub use compiled::{
+    bind_compiled, compile_from_template, render_compiled, BoundStatus, BoundVar, CompiledBinding,
+    CompiledTemplate, CompileStats, Item, RenderMode, RenderSpan, RenderTrace, VarRefLite,
+};
 pub use edit::{apply_edit_plan, ApplyEditPlanResult, EditPlan};
 pub use error::EngineError;
 pub use patch::{
