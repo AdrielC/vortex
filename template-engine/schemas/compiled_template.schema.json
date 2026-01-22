@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://podium.dev/schemas/template_engine/compiled_template.schema.json",
+  "title": "CompiledTemplate",
+  "description": "A parsed, validated template artifact with source mapping and stable segment ids for fast rebind/render.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wire_version", "syntax", "segments", "source_map"],
+  "properties": {
+    "wire_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "syntax": {
+      "type": "string",
+      "enum": ["colon_vars", "jinja_subset"]
+    },
+    "segments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CompiledSegment" }
+    },
+    "source_map": {
+      "$ref": "source_map.schema.json"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CompileDiagnostic" },
+      "default": []
+    }
+  },
+  "$defs": {
+    "SegmentId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id for segments within this compiled template. Must be unique."
+    },
+    "VarKind": {
+      "type": "string",
+      "enum": ["preset", "runtime"]
+    },
+    "Source": {
+      "type": "string",
+      "enum": ["agent_config", "sector_configs", "config"]
+    },
+    "CompiledSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/SegmentId" },
+        "type": { "type": "string", "enum": ["text", "var", "expr"] },
+        "text": { "type": "string" },
+        "slug": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/VarKind" },
+        "source": { "$ref": "#/$defs/Source" },
+        "schema": { "type": ["string", "null"] },
+        "expr": { "$ref": "expr.schema.json" },
+        "expr_id": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "text" } } },
+          "then": { "required": ["text"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "var" } } },
+          "then": { "required": ["slug", "kind"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "expr" } } },
+          "then": { "required": ["expr", "expr_id"] }
+        }
+      ]
+    },
+    "CompileDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "warn_unknown_function",
+            "warn_ambiguous_var_source",
+            "warn_schema_inference_skipped",
+            "warn_noncanonical_decimal"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "segment_index": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
