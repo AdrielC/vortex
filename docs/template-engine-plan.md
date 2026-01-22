@@ -229,3 +229,608 @@ Deliverables:
 
 - fionn-diff is the primary native engine for JSON diff/patch/merge with SIMD acceleration and LCS for arrays.
 - json-patch remains the workhorse for RFC 6902/7396 interoperability.
+
+## Agent Fork → Propose → Diff → Apply → Revert → Commit Loop (Concrete Plan)
+
+This section makes the agent loop concrete with module layout, wire types, and Rust code examples. The ABI is JSON-in/out.
+
+### Modules + Responsibilities
+
+```
+template_engine/src/
+  ast.rs                 # Template/Segment
+  tokenize.rs            # parse :slug: to segments
+  render.rs              # render template/resolved/annotated
+  bind/                  # env placement + binding report
+
+  edit/
+    mod.rs
+    plan.rs              # EditPlan + selectors
+    compile.rs           # EditPlan -> new Template (deterministic)
+    diff.rs              # Template-aware diff (segments + text hunks)
+    patch.rs             # PatchBundle forward/inverse + hashing guards
+    apply.rs             # apply_patch_bundle, revert, patch chains
+
+  diff/
+    fionn.rs             # optional: fionn-diff for JSON diffs
+    rfc6902.rs           # json-patch RFC6902 apply
+```
+
+Key design choice: EditPlan compiles to a new `Template` deterministically, then we compute a patch bundle as `diff(old, new)`. This keeps reversibility and agent sanity.
+
+### Wire Types
+
+#### `Template` + `Segment`
+
+```rust
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Template {
+    pub wire_version: String, // "1.0"
+    pub segments: Vec<Segment>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum Segment {
+    #[serde(rename = "text")]
+    Text { value: String },
+
+    #[serde(rename = "var")]
+    Var {
+        slug: String,
+        kind: VarKind,
+        source: Option<Source>,
+        schema: Option<String>,
+        value: Option<Value>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum VarKind {
+    Preset,
+    Runtime,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    AgentConfig,
+    SectorConfigs,
+}
+```
+
+#### `EditPlan` + selectors
+
+```rust
+use serde::{Deserialize, Serialize};
+use crate::ast::{Segment, Source, VarKind};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EditPlan {
+    pub wire_version: String,        // "1.0"
+    pub fork_id: String,             // "agent:proposal:123"
+    pub edits: Vec<Edit>,
+    pub suggestions: Vec<Suggestion>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum Edit {
+    #[serde(rename = "replace_text")]
+    ReplaceText {
+        target: TextTarget,
+        value: String,
+    },
+
+    #[serde(rename = "insert_var")]
+    InsertVar {
+        target: TextTarget,
+        var: VarSpec,
+    },
+
+    #[serde(rename = "delete_var")]
+    DeleteVar { segment_index: usize },
+
+    #[serde(rename = "update_var")]
+    UpdateVar {
+        segment_index: usize,
+        patch: VarPatch,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TextTarget {
+    pub segment_index: usize,
+    pub start: usize, // utf-8 byte offset
+    pub end: usize,   // exclusive
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VarSpec {
+    pub slug: String,
+    pub kind: VarKind,
+    pub source: Option<Source>,
+    pub schema: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct VarPatch {
+    pub source: Option<Option<Source>>,
+    pub schema: Option<Option<String>>,
+    pub kind: Option<VarKind>,
+    pub value: Option<Option<serde_json::Value>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum Suggestion {
+    #[serde(rename = "var_value")]
+    VarValue {
+        suggestion_id: String,
+        slug: String,
+        source: Source,
+        schema: Option<String>,
+        proposed_value: serde_json::Value,
+        status: SuggestionStatus,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionStatus {
+    PendingUser,
+    AutoAccepted,
+    Rejected,
+}
+```
+
+#### `PatchBundle` (reversible, hash-guarded)
+
+```rust
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PatchBundle {
+    pub wire_version: String, // "1.0"
+    pub left_hash: String,    // "blake3:...."
+    pub right_hash: String,   // "blake3:...."
+    pub forward: Patch,
+    pub inverse: Patch,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum Patch {
+    #[serde(rename = "rfc6902")]
+    Rfc6902 { ops: Vec<Rfc6902Op> },
+
+    #[serde(rename = "fionn")]
+    Fionn { patch: Value },
+
+    #[serde(rename = "merge7396")]
+    Merge7396 { patch: Value },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Rfc6902Op {
+    pub op: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+}
+```
+
+#### `TemplateDiff` (segment + text hunks)
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TemplateDiff {
+    pub wire_version: String, // "1.0"
+    pub segment_changes: Vec<SegmentChange>,
+    pub text_hunks: Vec<TextHunkDiff>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum SegmentChange {
+    #[serde(rename = "insert_var")]
+    InsertVar { at: usize, slug: String },
+
+    #[serde(rename = "delete_var")]
+    DeleteVar { at: usize, slug: String },
+
+    #[serde(rename = "update_var")]
+    UpdateVar { at: usize, slug: String, fields: Vec<String> },
+
+    #[serde(rename = "replace_text")]
+    ReplaceText { at: usize, before_len: usize, after_len: usize },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TextHunkDiff {
+    pub segment_index: usize,
+    pub before: String,
+    pub after: String,
+    pub hunks: Vec<StringHunk>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StringHunk {
+    pub op: String, // "equal" | "delete" | "insert"
+    pub text: String,
+}
+```
+
+### Deterministic Edit Application
+
+```rust
+use crate::ast::{Segment, Template};
+use crate::edit::plan::{Edit, EditPlan, TextTarget};
+use crate::error::EngineError;
+
+pub fn apply_edits(base: &Template, plan: &EditPlan) -> Result<Template, EngineError> {
+    let mut t = base.clone();
+
+    let mut edits = plan.edits.clone();
+    edits.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+
+    for e in edits {
+        apply_one(&mut t, e)?;
+    }
+
+    Ok(t)
+}
+
+fn sort_key(e: &Edit) -> (usize, usize, u8) {
+    match e {
+        Edit::ReplaceText { target, .. } => (target.segment_index, usize::MAX - target.start, 0),
+        Edit::InsertVar { target, .. } => (target.segment_index, usize::MAX - target.start, 1),
+        Edit::UpdateVar { segment_index, .. } => (*segment_index, 0, 2),
+        Edit::DeleteVar { segment_index } => (*segment_index, 0, 3),
+    }
+}
+
+fn apply_one(t: &mut Template, e: Edit) -> Result<(), EngineError> {
+    match e {
+        Edit::ReplaceText { target, value } => replace_text(t, target, value),
+        Edit::InsertVar { target, var } => insert_var(t, target, var),
+        Edit::DeleteVar { segment_index } => delete_var(t, segment_index),
+        Edit::UpdateVar { segment_index, patch } => update_var(t, segment_index, patch),
+    }
+}
+
+fn replace_text(t: &mut Template, target: TextTarget, value: String) -> Result<(), EngineError> {
+    let seg = t.segments.get_mut(target.segment_index)
+        .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
+
+    let Segment::Text { value: ref mut s } = seg else {
+        return Err(EngineError::InvalidArgument("ReplaceText target must be text segment".into()));
+    };
+
+    if target.start > target.end || target.end > s.len() {
+        return Err(EngineError::InvalidArgument("invalid text range".into()));
+    }
+
+    s.replace_range(target.start..target.end, &value);
+    Ok(())
+}
+
+fn insert_var(t: &mut Template, target: TextTarget, var: crate::edit::plan::VarSpec) -> Result<(), EngineError> {
+    let seg = t.segments.get_mut(target.segment_index)
+        .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
+
+    let Segment::Text { value: ref mut s } = seg else {
+        return Err(EngineError::InvalidArgument("InsertVar target must be text segment".into()));
+    };
+
+    if target.start > s.len() {
+        return Err(EngineError::InvalidArgument("insert offset out of bounds".into()));
+    }
+
+    let right = s.split_off(target.start);
+    let left = std::mem::take(s);
+
+    t.segments[target.segment_index] = Segment::Text { value: left };
+    t.segments.insert(target.segment_index + 1, Segment::Var {
+        slug: var.slug,
+        kind: var.kind,
+        source: var.source,
+        schema: var.schema,
+        value: None,
+    });
+    t.segments.insert(target.segment_index + 2, Segment::Text { value: right });
+
+    Ok(())
+}
+
+fn delete_var(t: &mut Template, segment_index: usize) -> Result<(), EngineError> {
+    let seg = t.segments.get(segment_index)
+        .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
+
+    match seg {
+        Segment::Var { .. } => {
+            t.segments.remove(segment_index);
+            Ok(())
+        }
+        _ => Err(EngineError::InvalidArgument("DeleteVar target must be var segment".into())),
+    }
+}
+
+fn update_var(t: &mut Template, segment_index: usize, patch: crate::edit::plan::VarPatch) -> Result<(), EngineError> {
+    let seg = t.segments.get_mut(segment_index)
+        .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
+
+    let Segment::Var { kind, source, schema, value, .. } = seg else {
+        return Err(EngineError::InvalidArgument("UpdateVar target must be var segment".into()));
+    };
+
+    if let Some(k) = patch.kind {
+        *kind = k;
+    }
+    if let Some(src) = patch.source {
+        *source = src;
+    }
+    if let Some(sc) = patch.schema {
+        *schema = sc;
+    }
+    if let Some(v) = patch.value {
+        *value = v;
+    }
+
+    Ok(())
+}
+```
+
+### Patch Bundle (RFC 6902 forward + inverse)
+
+```rust
+use serde_json::Value;
+use crate::edit::patch::{Patch, PatchBundle, Rfc6902Op};
+use crate::error::EngineError;
+
+#[derive(Clone, Debug)]
+pub struct ApplyOptions {
+    pub enforce_left_hash: bool,
+    pub enforce_right_hash: bool,
+}
+
+pub fn hash_json(v: &Value) -> String {
+    format!("blake3:{}", blake3::hash(v.to_string().as_bytes()).to_hex())
+}
+
+pub fn make_patch_bundle_rfc6902(left: &Value, right: &Value) -> Result<PatchBundle, EngineError> {
+    let forward_patch = json_patch::diff(left, right);
+    let inverse_patch = json_patch::diff(right, left);
+
+    let forward_ops = forward_patch.0.into_iter().map(op_from_json_patch).collect();
+    let inverse_ops = inverse_patch.0.into_iter().map(op_from_json_patch).collect();
+
+    Ok(PatchBundle {
+        wire_version: "1.0".into(),
+        left_hash: hash_json(left),
+        right_hash: hash_json(right),
+        forward: Patch::Rfc6902 { ops: forward_ops },
+        inverse: Patch::Rfc6902 { ops: inverse_ops },
+    })
+}
+
+fn op_from_json_patch(op: json_patch::PatchOperation) -> Rfc6902Op {
+    use json_patch::PatchOperation::*;
+    match op {
+        Add(a) => Rfc6902Op { op: "add".into(), path: a.path.to_string(), from: None, value: Some(a.value) },
+        Remove(r) => Rfc6902Op { op: "remove".into(), path: r.path.to_string(), from: None, value: None },
+        Replace(r) => Rfc6902Op { op: "replace".into(), path: r.path.to_string(), from: None, value: Some(r.value) },
+        Move(m) => Rfc6902Op { op: "move".into(), path: m.path.to_string(), from: Some(m.from.to_string()), value: None },
+        Copy(c) => Rfc6902Op { op: "copy".into(), path: c.path.to_string(), from: Some(c.from.to_string()), value: None },
+        Test(t) => Rfc6902Op { op: "test".into(), path: t.path.to_string(), from: None, value: Some(t.value) },
+    }
+}
+
+pub fn apply_patch_bundle_forward(doc: &Value, b: &PatchBundle, opts: ApplyOptions) -> Result<Value, EngineError> {
+    if opts.enforce_left_hash && hash_json(doc) != b.left_hash {
+        return Err(EngineError::InvalidArgument("left_hash mismatch".into()));
+    }
+    apply_patch(doc, &b.forward)
+}
+
+pub fn apply_patch_bundle_inverse(doc: &Value, b: &PatchBundle, opts: ApplyOptions) -> Result<Value, EngineError> {
+    if opts.enforce_right_hash && hash_json(doc) != b.right_hash {
+        return Err(EngineError::InvalidArgument("right_hash mismatch".into()));
+    }
+    apply_patch(doc, &b.inverse)
+}
+
+pub fn apply_patch(doc: &Value, p: &Patch) -> Result<Value, EngineError> {
+    match p {
+        Patch::Rfc6902 { ops } => {
+            let mut v = doc.clone();
+            let patch = json_patch::Patch(ops.iter().map(op_to_json_patch).collect());
+            json_patch::patch(&mut v, &patch)
+                .map_err(|e| EngineError::InvalidArgument(e.to_string()))?;
+            Ok(v)
+        }
+        Patch::Merge7396 { patch } => {
+            let mut v = doc.clone();
+            json_patch::merge(&mut v, patch);
+            Ok(v)
+        }
+        Patch::Fionn { .. } => Err(EngineError::InvalidArgument("fionn patch apply not implemented yet".into())),
+    }
+}
+
+fn op_to_json_patch(op: &Rfc6902Op) -> json_patch::PatchOperation {
+    use json_patch::*;
+    match op.op.as_str() {
+        "add" => PatchOperation::Add(AddOperation { path: op.path.parse().unwrap(), value: op.value.clone().unwrap() }),
+        "remove" => PatchOperation::Remove(RemoveOperation { path: op.path.parse().unwrap() }),
+        "replace" => PatchOperation::Replace(ReplaceOperation { path: op.path.parse().unwrap(), value: op.value.clone().unwrap() }),
+        "move" => PatchOperation::Move(MoveOperation { from: op.from.clone().unwrap().parse().unwrap(), path: op.path.parse().unwrap() }),
+        "copy" => PatchOperation::Copy(CopyOperation { from: op.from.clone().unwrap().parse().unwrap(), path: op.path.parse().unwrap() }),
+        "test" => PatchOperation::Test(TestOperation { path: op.path.parse().unwrap(), value: op.value.clone().unwrap() }),
+        other => panic!("unsupported op {other}"),
+    }
+}
+```
+
+### End-to-End Apply (build template + diff + patch)
+
+```rust
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::ast::Template;
+use crate::edit::plan::EditPlan;
+use crate::edit::diff::TemplateDiff;
+use crate::edit::patch::PatchBundle;
+use crate::error::EngineError;
+
+use crate::edit::{compile, patch, diff};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ApplyEditPlanResult {
+    pub wire_version: String,      // "1.0"
+    pub new_template: Template,
+    pub patch_bundle: PatchBundle,
+    pub diff: TemplateDiff,
+    pub suggestions: Vec<crate::edit::plan::Suggestion>,
+}
+
+pub fn apply_edit_plan(base: &Template, plan: &EditPlan) -> Result<ApplyEditPlanResult, EngineError> {
+    let new_template = compile::apply_edits(base, plan)?;
+
+    let d = diff::diff_templates(base, &new_template);
+
+    let left: Value = serde_json::to_value(base)?;
+    let right: Value = serde_json::to_value(&new_template)?;
+    let bundle = patch::make_patch_bundle_rfc6902(&left, &right)?;
+
+    Ok(ApplyEditPlanResult {
+        wire_version: "1.0".into(),
+        new_template,
+        patch_bundle: bundle,
+        diff: d,
+        suggestions: plan.suggestions.clone(),
+    })
+}
+```
+
+### Minimal Template Diff (starter)
+
+```rust
+use crate::ast::{Segment, Template};
+use crate::edit::diff::{SegmentChange, TemplateDiff, TextHunkDiff, StringHunk};
+
+pub fn diff_templates(a: &Template, b: &Template) -> TemplateDiff {
+    let mut out = TemplateDiff { wire_version: "1.0".into(), ..Default::default() };
+
+    let n = a.segments.len().max(b.segments.len());
+    for i in 0..n {
+        match (a.segments.get(i), b.segments.get(i)) {
+            (Some(Segment::Var { slug: sa, .. }), Some(Segment::Var { slug: sb, .. })) if sa == sb => {}
+            (Some(Segment::Var { slug, .. }), None) => out.segment_changes.push(SegmentChange::DeleteVar { at: i, slug: slug.clone() }),
+            (None, Some(Segment::Var { slug, .. })) => out.segment_changes.push(SegmentChange::InsertVar { at: i, slug: slug.clone() }),
+            (Some(Segment::Text { value: ta }), Some(Segment::Text { value: tb })) if ta != tb => {
+                out.segment_changes.push(SegmentChange::ReplaceText { at: i, before_len: ta.len(), after_len: tb.len() });
+                out.text_hunks.push(TextHunkDiff {
+                    segment_index: i,
+                    before: ta.clone(),
+                    after: tb.clone(),
+                    hunks: vec![
+                        StringHunk { op: "delete".into(), text: ta.clone() },
+                        StringHunk { op: "insert".into(), text: tb.clone() },
+                    ],
+                });
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+```
+
+### Agent Loop Example
+
+```rust
+use template_engine::ast::*;
+use template_engine::edit::plan::*;
+use template_engine::edit;
+use serde_json::json;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let base = Template {
+        wire_version: "1.0".into(),
+        segments: vec![
+            Segment::Text { value: "We can come out today. Trip fee is ".into() },
+            Segment::Text { value: " TBD.".into() },
+        ],
+    };
+
+    let plan = EditPlan {
+        wire_version: "1.0".into(),
+        fork_id: "agent:proposal:123".into(),
+        edits: vec![
+            Edit::InsertVar {
+                target: TextTarget { segment_index: 0, start: base_text_len(&base, 0), end: base_text_len(&base, 0) },
+                var: VarSpec {
+                    slug: "trip_fee".into(),
+                    kind: VarKind::Runtime,
+                    source: Some(Source::SectorConfigs),
+                    schema: Some("podium:schema:money".into()),
+                },
+            }
+        ],
+        suggestions: vec![
+            Suggestion::VarValue {
+                suggestion_id: "sug-1".into(),
+                slug: "trip_fee".into(),
+                source: Source::SectorConfigs,
+                schema: Some("podium:schema:money".into()),
+                proposed_value: json!({"amount":"95.00","currency":"USD"}),
+                status: SuggestionStatus::PendingUser,
+            }
+        ],
+    };
+
+    let res = edit::apply_edit_plan(&base, &plan)?;
+    println!("Diff: {}", serde_json::to_string_pretty(&res.diff)?);
+
+    let left = serde_json::to_value(&base)?;
+    let right = template_engine::edit::apply::apply_patch_bundle_forward(
+        &left,
+        &res.patch_bundle,
+        template_engine::edit::apply::ApplyOptions { enforce_left_hash: true, enforce_right_hash: false }
+    )?;
+
+    let reverted = template_engine::edit::apply::apply_patch_bundle_inverse(
+        &right,
+        &res.patch_bundle,
+        template_engine::edit::apply::ApplyOptions { enforce_left_hash: false, enforce_right_hash: true }
+    )?;
+
+    assert_eq!(left, reverted);
+    Ok(())
+}
+
+fn base_text_len(t: &Template, idx: usize) -> usize {
+    match &t.segments[idx] {
+        Segment::Text { value } => value.len(),
+        _ => 0,
+    }
+}
+```
+
+### Notes on Agent Usefulness
+
+- Two patch streams: template edits vs. config/env suggestions.
+- Commit is naturally two-phase: accept template edits first, then accept suggestions as config changes.
+- The patch bundle is reversible and guarded by hashes to prevent accidental application.
