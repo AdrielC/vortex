@@ -39,7 +39,11 @@ fn replace_text(template: &mut Template, target: TextTarget, value: String) -> R
         .get_mut(target.segment_index)
         .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
 
-    let Segment::Text { value: ref mut text } = segment else {
+    let Segment::Text {
+        value: ref mut text,
+        span,
+    } = segment
+    else {
         return Err(EngineError::InvalidArgument(
             "ReplaceText target must be text segment".into(),
         ));
@@ -54,6 +58,7 @@ fn replace_text(template: &mut Template, target: TextTarget, value: String) -> R
     let end = char_to_byte_index(text, target.end)?;
 
     text.replace_range(start..end, &value);
+    *span = None;
     Ok(())
 }
 
@@ -63,7 +68,11 @@ fn insert_var(template: &mut Template, target: TextTarget, var: VarSpec) -> Resu
         .get_mut(target.segment_index)
         .ok_or_else(|| EngineError::InvalidArgument("segment_index out of bounds".into()))?;
 
-    let Segment::Text { value: ref mut text } = segment else {
+    let Segment::Text {
+        value: ref mut text,
+        span,
+    } = segment
+    else {
         return Err(EngineError::InvalidArgument(
             "InsertVar target must be text segment".into(),
         ));
@@ -78,8 +87,12 @@ fn insert_var(template: &mut Template, target: TextTarget, var: VarSpec) -> Resu
 
     let right = text.split_off(start);
     let left = std::mem::take(text);
+    *span = None;
 
-    template.segments[target.segment_index] = Segment::Text { value: left };
+    template.segments[target.segment_index] = Segment::Text {
+        value: left,
+        span: None,
+    };
     template.segments.insert(
         target.segment_index + 1,
         Segment::Var {
@@ -88,11 +101,16 @@ fn insert_var(template: &mut Template, target: TextTarget, var: VarSpec) -> Resu
             source: var.source,
             schema: var.schema,
             value: None,
+            span: None,
         },
     );
-    template
-        .segments
-        .insert(target.segment_index + 2, Segment::Text { value: right });
+    template.segments.insert(
+        target.segment_index + 2,
+        Segment::Text {
+            value: right,
+            span: None,
+        },
+    );
 
     Ok(())
 }

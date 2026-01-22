@@ -3,9 +3,10 @@ mod edit;
 mod error;
 mod patch;
 mod semantic_diff;
+mod text_apply;
 mod ui_diff;
 
-pub use ast::{Segment, Source, Template, VarKind};
+pub use ast::{Segment, Source, Span, Template, VarKind};
 pub use edit::{apply_edit_plan, ApplyEditPlanResult, EditPlan};
 pub use error::EngineError;
 pub use patch::{
@@ -14,4 +15,5 @@ pub use patch::{
     Rfc6902Op,
 };
 pub use semantic_diff::{diff_templates_from_patch, SegmentChange, StringHunk, TemplateDiff, TextHunkDiff};
+pub use text_apply::{apply_template_edits_to_text, SpanView};
 pub use ui_diff::{SimpleUiDiffEngine, UiDiff, UiDiffEngine};

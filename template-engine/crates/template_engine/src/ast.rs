@@ -8,10 +8,16 @@ pub struct Template {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start_byte: u32,
+    pub end_byte: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum Segment {
     #[serde(rename = "text")]
-    Text { value: String },
+    Text { value: String, span: Option<Span> },
 
     #[serde(rename = "var")]
     Var {
@@ -20,6 +26,7 @@ pub enum Segment {
         source: Option<Source>,
         schema: Option<String>,
         value: Option<Value>,
+        span: Option<Span>,
     },
 }
 

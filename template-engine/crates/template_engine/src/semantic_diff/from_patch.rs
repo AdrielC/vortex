@@ -71,7 +71,10 @@ pub fn diff_templates_from_patch(
                     at: index,
                     slug: slug.clone(),
                 }),
-            (Some(Segment::Text { value: left_text }), Some(Segment::Text { value: right_text }))
+            (
+                Some(Segment::Text { value: left_text, .. }),
+                Some(Segment::Text { value: right_text, .. }),
+            )
                 if left_text != right_text =>
             {
                 diff.segment_changes.push(SegmentChange::ReplaceText {
