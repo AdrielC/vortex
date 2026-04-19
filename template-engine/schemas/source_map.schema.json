@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://podium.dev/schemas/template_engine/source_map.schema.json",
+  "title": "SourceMap",
+  "description": "Byte-offset spans into the original UTF-8 source string for editor indexing and patch planning.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wire_version", "syntax", "source_len_bytes", "spans"],
+  "properties": {
+    "wire_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "syntax": {
+      "type": "string",
+      "enum": ["colon_vars", "jinja_subset"]
+    },
+    "source_len_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Length in bytes of the original UTF-8 source."
+    },
+    "spans": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SourceSpan" }
+    }
+  },
+  "$defs": {
+    "SpanKind": {
+      "type": "string",
+      "enum": ["text", "var", "expr"]
+    },
+    "Range": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "SourceSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["range", "kind", "segment_index"],
+      "properties": {
+        "range": {
+          "$ref": "#/$defs/Range",
+          "description": "[start,end) byte offsets into the source UTF-8 bytes"
+        },
+        "kind": { "$ref": "#/$defs/SpanKind" },
+        "segment_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into Template.segments / CompiledTemplate.segments"
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only for kind=var"
+        },
+        "expr_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id for kind=expr, used for caching/trace joins"
+        },
+        "inner_range": {
+          "$ref": "#/$defs/Range",
+          "description": "For jinja_subset only: [start,end) range of the inner expression content (excludes '{{' '}}')."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "var" } } },
+          "then": { "required": ["slug"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "expr" } } },
+          "then": { "required": ["expr_id"] }
+        }
+      ]
+    }
+  }
+}
