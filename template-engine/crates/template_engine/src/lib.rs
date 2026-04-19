@@ -13,6 +13,8 @@ pub use compiled::{
     CompiledTemplate, CompileStats, Item, RenderMode, RenderSpan, RenderTrace, VarRefLite,
 };
 pub use edit::{apply_edit_plan, ApplyEditPlanResult, EditPlan};
+#[allow(unused_imports)]
+pub use edit::{Edit, TextTarget, VarSpec};
 pub use error::EngineError;
 pub use patch::{
     apply_patch, apply_patch_bundle_forward, apply_patch_bundle_inverse, hash_json,

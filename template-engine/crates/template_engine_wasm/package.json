@@ -1,0 +1,6 @@
+{
+  "name": "template-engine-wasm",
+  "version": "0.1.0",
+  "type": "module",
+  "types": "ts/index.ts"
+}
